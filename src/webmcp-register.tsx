@@ -23,9 +23,15 @@
 //     off in one config change if a firm reacts badly.
 //
 // Tools are document-scoped and die on hard navigation; app-router soft
-// navigation preserves the document, so registering once in the
-// dashboard shell covers the signed-in surface. The AbortSignal
-// unregisters them on unmount.
+// navigation preserves the document. Registration is a once-per-document
+// singleton (lib/webmcp/lifecycle.ts) with NO teardown on unmount: the
+// component mounts on the five DashboardShell layouts AND the matter
+// page, the App Router transition between them has a real gap (the
+// matter page's loading boundary plus its server render), and any
+// unmount-time abort either drops the tools mid-path or forces a
+// re-register a host may refuse as a duplicate (2026-08-28 falsifier).
+// A registered tool on a page without a mount is exactly as safe as on
+// one - every execute() is a session-authed same-origin fetch.
 //
 // EXPOSURE LIST (every route an execute() can reach; falsifier-walked
 // 2026-08-28): GET /api/scopes, GET /api/scopes/[id], POST /api/scopes,
@@ -44,6 +50,10 @@
 // Voice canon: ASCII hyphens only.
 
 import { useEffect } from "react";
+import {
+  acquireScopeTools,
+  recordAsyncToolRejection,
+} from "@/lib/webmcp/lifecycle";
 
 // Minimal shape of the WebMCP API we depend on (document.modelContext).
 // Declared locally so the adapter is self-contained; the browser provides
@@ -94,19 +104,36 @@ async function scopeFetch(
 export function WebMcpRegister({ enabled }: { enabled: boolean }) {
   useEffect(() => {
     if (!enabled) return;
-    const mc = getModelContext();
-    if (!mc) {
-      // Browser does not expose document.modelContext; nothing to do.
-      // Logged so QA can tell "surface has no WebMCP" apart from "the
-      // adapter failed": if this line prints, the adapter ran and the
-      // surface is the reason no tools appear.
-      console.info(
-        "[webmcp] document.modelContext not present; no Scope tools registered",
-      );
-      return;
-    }
-    const ctl = new AbortController();
-    const opts = { signal: ctl.signal };
+    // Once-per-document singleton, no teardown (see lifecycle.ts for
+    // the falsifier history). A zero-tool attempt does not latch -
+    // whether the host API was absent, refused every tool
+    // synchronously, or accepted and then rejected every returned
+    // promise (each async rejection counts the latch back down) - so
+    // the next mount retries from zero. Only a registration with at
+    // least one live tool stays latched.
+    acquireScopeTools(startRegistration);
+  }, [enabled]);
+
+  return null;
+}
+
+// One registration attempt against the live document.modelContext.
+// Returns how many tools the host accepted synchronously; 0 when the
+// surface does not expose the API (the lifecycle retries on the next
+// mount in that case).
+function startRegistration(): number {
+  const mc = getModelContext();
+  if (!mc) {
+    // Browser does not expose document.modelContext; nothing to do.
+    // Logged so QA can tell "surface has no WebMCP" apart from "the
+    // adapter failed": if this line prints, the adapter ran and the
+    // surface is the reason no tools appear.
+    console.info(
+      "[webmcp] document.modelContext not present; no Scope tools registered",
+    );
+    return 0;
+  }
+  {
 
     const tools: Array<Omit<ToolDef, "options">> = [
       {
@@ -352,11 +379,10 @@ export function WebMcpRegister({ enabled }: { enabled: boolean }) {
             method: "POST",
             body: JSON.stringify(body),
           });
-          // The server stamps conflict_check.ran on every dispatch, even
-          // when zero adverse parties were on file and the gate had
-          // nothing to check (known stamp defect, queued server-side).
-          // This surface knows whether it sent parties, so correct the
-          // block rather than relay a clear that never ran.
+          // The server no longer stamps conflict_check.ran on a
+          // zero-party no-op (fixed 2026-08-28), so this override is
+          // belt-and-braces for any deploy skew: when this surface sent
+          // no parties, never relay a "ran" block as a completed check.
           if (
             !sentAdverseParties &&
             r.body &&
@@ -431,22 +457,30 @@ export function WebMcpRegister({ enabled }: { enabled: boolean }) {
     ];
 
     // Register all; ignore individual failures so one bad registration
-    // does not strand the rest.
+    // does not strand the rest. No AbortSignal: the registration lives
+    // for the document (see the header). The count below is what the
+    // host accepted SYNCHRONOUSLY; a host may still reject a returned
+    // promise later, and each such rejection is logged and counted
+    // back down in the lifecycle so an all-async-refusing host does
+    // not latch a dead registration.
     let registered = 0;
     for (const t of tools) {
       try {
-        void mc.registerTool(t, opts);
+        Promise.resolve(mc.registerTool(t)).catch(() => {
+          console.info(
+            `[webmcp] host rejected tool ${t.name} after registration was offered`,
+          );
+          recordAsyncToolRejection();
+        });
         registered += 1;
       } catch {
         /* browser rejected this tool; leave the others registered */
       }
     }
     console.info(
-      `[webmcp] registered ${registered}/${tools.length} Scope tools on document.modelContext`,
+      `[webmcp] registered ${registered}/${tools.length} Scope tools on document.modelContext (synchronous acceptance)`,
     );
 
-    return () => ctl.abort();
-  }, [enabled]);
-
-  return null;
+    return registered;
+  }
 }
