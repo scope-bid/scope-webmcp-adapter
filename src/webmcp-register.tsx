@@ -12,9 +12,9 @@
 //     business logic. Org and tenancy come from the session cookie on the
 //     server, never from a tool argument.
 //   - Nothing settlement-shaped is registered. The award tool PARKS
-//     (server-side human-approval gate) and returns the parked state; it
-//     cannot commit. The approval GRANT stays a human action on
-//     /approvals and is deliberately NOT a tool.
+//     (server-side human-approval gate, WebMCP Part A) and returns the
+//     parked state; it cannot commit. The approval GRANT stays a human
+//     action on /approvals and is deliberately NOT a tool.
 //   - scope_dispatch_matter parks too, so it contacts NO professional
 //     until a person at the firm releases the approval (the outbound
 //     fan-out fires only on a released dispatch). The read tools return
@@ -26,6 +26,20 @@
 // navigation preserves the document, so registering once in the
 // dashboard shell covers the signed-in surface. The AbortSignal
 // unregisters them on unmount.
+//
+// EXPOSURE LIST (every route an execute() can reach; falsifier-walked
+// 2026-08-28): GET /api/scopes, GET /api/scopes/[id], POST /api/scopes,
+// POST /api/scopes/[id]/dispatch (ownership-gated: 404 unless the scope
+// belongs to the session org), POST /api/scope/award. Adding a route to
+// any execute() extends this list and needs its own adversarial pass.
+//
+// 2026-08-28 falsifier round: the original 4-field dispatch schema could
+// not complete intake for process serving / records / court reporting
+// (no form_field_values, no matter_id to answer field_prompts), so every
+// such dispatch stranded at incomplete_intake, and with no
+// adverse_parties input the conflict gate had no parties to filter on.
+// The schema below carries the same intake contract as the MCP tool for
+// exactly that reason.
 //
 // Voice canon: ASCII hyphens only.
 
@@ -81,7 +95,16 @@ export function WebMcpRegister({ enabled }: { enabled: boolean }) {
   useEffect(() => {
     if (!enabled) return;
     const mc = getModelContext();
-    if (!mc) return; // Browser does not support WebMCP; nothing to do.
+    if (!mc) {
+      // Browser does not expose document.modelContext; nothing to do.
+      // Logged so QA can tell "surface has no WebMCP" apart from "the
+      // adapter failed": if this line prints, the adapter ran and the
+      // surface is the reason no tools appear.
+      console.info(
+        "[webmcp] document.modelContext not present; no Scope tools registered",
+      );
+      return;
+    }
     const ctl = new AbortController();
     const opts = { signal: ctl.signal };
 
@@ -140,15 +163,11 @@ export function WebMcpRegister({ enabled }: { enabled: boolean }) {
       {
         name: "scope_dispatch_matter",
         description:
-          "Create and dispatch a new matter. Returns named professionals with prices computed from each one's own rate card. Nothing is committed and no professional is contacted until a person at the firm approves an award.",
+          "Create and dispatch a new matter. Returns named professionals with prices computed from each one's own rate card. Nothing is committed and no professional is contacted until a person at the firm approves an award. Include adverse_parties so the dispatch-time conflict gate has parties to filter professionals against. Quotes compute from category and jurisdiction alone. Complete the work order BEFORE awarding - the professional must never have to call the firm to learn who, where, or what: pass the per-category fields in form_field_values (process serving: party_to_serve, service_address, deadline, deadline_semantics 'on' or 'by', rush 'yes'/'no', affidavit_filing 'yes'/'no'; records retrieval: subject_name, provider_name, provider_location, record_types, date_range; depositions: proceeding_date, location, case_caption). If the response is status='incomplete_intake', ask the user each question in field_prompts, then call this tool again with matter_id set to the returned scope_id and the collected form_field_values - do NOT create a new matter.",
         inputSchema: {
           type: "object",
           properties: {
             title: { type: "string", description: "Short title for the matter." },
-            matter_type: {
-              type: "string",
-              description: "The matter type, e.g. Civil Litigation.",
-            },
             service_category: {
               type: "string",
               description:
@@ -158,27 +177,204 @@ export function WebMcpRegister({ enabled }: { enabled: boolean }) {
               type: "string",
               description: "What needs to happen, in plain language.",
             },
+            jurisdiction: {
+              type: "string",
+              description:
+                "Where the work happens, e.g. 'Dallas County, TX'. Improves quote accuracy.",
+            },
+            timeline_deadline: {
+              type: "string",
+              description:
+                "Hard deadline for the work as an ISO date (YYYY-MM-DD). Omit if none.",
+            },
+            adverse_parties: {
+              type: "array",
+              description:
+                "Parties adverse to the matter; professionals with declared relationships to them are filtered out at dispatch. Set at creation - the completion call (matter_id) cannot add parties later.",
+              items: {
+                type: "object",
+                properties: {
+                  party_name: { type: "string" },
+                  party_role: {
+                    type: "string",
+                    enum: ["defendant", "plaintiff", "third_party", "related"],
+                  },
+                },
+                required: ["party_name", "party_role"],
+                additionalProperties: false,
+              },
+            },
+            form_field_values: {
+              type: "object",
+              description:
+                "Per-category work-order fields (see the tool description). String values; booleans as 'yes'/'no'.",
+              additionalProperties: { type: "string" },
+            },
+            documents: {
+              type: "array",
+              description:
+                "Text of documents to serve or file (paste the content). Omit to get a secure upload link after award.",
+              items: { type: "string" },
+            },
+            matter_id: {
+              type: "string",
+              description:
+                "ONLY when completing an earlier dispatch that returned incomplete_intake: the scope_id it returned. Re-dispatches that matter with the added form_field_values instead of creating a new one.",
+            },
           },
           required: ["title", "service_category", "description"],
           additionalProperties: false,
         },
         execute: async (input) => {
+          const ffv =
+            input.form_field_values &&
+            typeof input.form_field_values === "object" &&
+            !Array.isArray(input.form_field_values)
+              ? (input.form_field_values as Record<string, unknown>)
+              : undefined;
+          const matterId =
+            typeof input.matter_id === "string" && input.matter_id.trim()
+              ? input.matter_id.trim()
+              : null;
+          if (matterId) {
+            // Completing an incomplete_intake matter: re-dispatch it with
+            // the collected fields. The route 404s unless the matter
+            // belongs to the session's org.
+            const r = await scopeFetch(
+              `/api/scopes/${encodeURIComponent(matterId)}/dispatch`,
+              {
+                method: "POST",
+                body: JSON.stringify({ form_field_values: ffv ?? {} }),
+              },
+            );
+            return r.body;
+          }
+          const body: Record<string, unknown> = {
+            title: input.title,
+            service_category: input.service_category,
+            description: input.description,
+          };
+          if (
+            typeof input.jurisdiction === "string" &&
+            input.jurisdiction.trim()
+          ) {
+            body.jurisdiction = input.jurisdiction.trim();
+          }
+          // Date columns refuse empty strings and reject non-ISO text with
+          // a raw Postgres error that would fail the whole creation. Check
+          // the shape here and hand the agent a fixable message instead of
+          // making the round trip.
+          if (
+            typeof input.timeline_deadline === "string" &&
+            input.timeline_deadline.trim()
+          ) {
+            const d = input.timeline_deadline.trim();
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) {
+              return {
+                error: `timeline_deadline must be an ISO date (YYYY-MM-DD); got "${d}". Fix the date and call the tool again - nothing was created.`,
+              };
+            }
+            body.timeline_deadline = d;
+          }
+          if (ffv && Object.keys(ffv).length > 0) {
+            body.form_field_values = ffv;
+          }
+          let sentAdverseParties = false;
+          if (
+            Array.isArray(input.adverse_parties) &&
+            input.adverse_parties.length > 0
+          ) {
+            // The route and the DB check constraint accept exactly these
+            // four roles (migration 0071); anything else is silently
+            // DROPPED server-side, which would no-op the conflict gate
+            // while the response still reports it ran. Normalize common
+            // variants (bare strings, name-key objects, hyphen/case role
+            // spellings) and default unknown roles to third_party so a
+            // supplied party always reaches scope_adverse_parties - and
+            // REFUSE rather than create the matter if none survive, so
+            // parties can never vanish silently.
+            const VALID_ROLES = new Set([
+              "defendant",
+              "plaintiff",
+              "third_party",
+              "related",
+            ]);
+            const parties = (input.adverse_parties as unknown[])
+              .map((p) => {
+                if (typeof p === "string") {
+                  return { party_name: p, party_role: "" };
+                }
+                if (p && typeof p === "object" && !Array.isArray(p)) {
+                  const rec = p as Record<string, unknown>;
+                  const name =
+                    typeof rec.party_name === "string"
+                      ? rec.party_name
+                      : typeof rec.name === "string"
+                        ? rec.name
+                        : "";
+                  const role =
+                    typeof rec.party_role === "string"
+                      ? rec.party_role
+                      : typeof rec.role === "string"
+                        ? rec.role
+                        : "";
+                  return { party_name: name, party_role: role };
+                }
+                return { party_name: "", party_role: "" };
+              })
+              .filter((p) => p.party_name.trim().length > 0)
+              .map((p) => {
+                const raw = p.party_role
+                  .trim()
+                  .toLowerCase()
+                  .replace(/[\s-]+/g, "_");
+                return {
+                  party_name: p.party_name.trim(),
+                  party_role: VALID_ROLES.has(raw) ? raw : "third_party",
+                };
+              });
+            if (parties.length === 0) {
+              return {
+                error:
+                  "adverse_parties could not be parsed - expected an array of {party_name, party_role} objects (party_role one of defendant, plaintiff, third_party, related). Nothing was created; fix the shape and call the tool again.",
+              };
+            }
+            body.adverse_parties = parties;
+            sentAdverseParties = true;
+          }
+          if (Array.isArray(input.documents)) {
+            const docs = (input.documents as unknown[]).filter(
+              (d) => typeof d === "string" && d.trim().length > 0,
+            );
+            if (docs.length > 0) body.documents = docs;
+          }
           const r = await scopeFetch("/api/scopes", {
             method: "POST",
-            body: JSON.stringify({
-              title: input.title,
-              matter_type: input.matter_type,
-              service_category: input.service_category,
-              description: input.description,
-            }),
+            body: JSON.stringify(body),
           });
+          // The server stamps conflict_check.ran on every dispatch, even
+          // when zero adverse parties were on file and the gate had
+          // nothing to check (known stamp defect, queued server-side).
+          // This surface knows whether it sent parties, so correct the
+          // block rather than relay a clear that never ran.
+          if (
+            !sentAdverseParties &&
+            r.body &&
+            typeof r.body === "object" &&
+            (r.body as Record<string, unknown>).conflict_check
+          ) {
+            (r.body as Record<string, unknown>).conflict_check = {
+              ran: false,
+              note: "No adverse parties were provided, so there was nothing to check. Provide adverse_parties to run the conflict gate. Do not report this as a completed conflict check.",
+            };
+          }
           return r.body;
         },
       },
       {
         name: "scope_award_matter",
         description:
-          "Award a dispatched matter to a named professional. This does NOT commit the firm's money: it sends the award for approval by a person at the firm, and returns the parked state with the named approver. The work proceeds only after that person releases it.",
+          "Award a dispatched matter to a named professional. This does NOT commit the firm's money: it sends the award for approval by a person at the firm and returns the parked state. The work proceeds only after that person releases it from the /approvals page. The response identifies the approval, not the approver by name - do not invent a person's name when reporting the park.",
         inputSchema: {
           type: "object",
           properties: {
@@ -204,8 +400,9 @@ export function WebMcpRegister({ enabled }: { enabled: boolean }) {
           });
           // A 409 with approval_pending is the EXPECTED, healthy result -
           // the award parked for a human to release. Return it as a normal
-          // result so the agent can report the park and the named approver,
-          // not as an error.
+          // result so the agent can report the park, not as an error. The
+          // payload carries the approval id and an opaque approver user
+          // id, never a person's name.
           return r.body;
         },
       },
@@ -235,13 +432,18 @@ export function WebMcpRegister({ enabled }: { enabled: boolean }) {
 
     // Register all; ignore individual failures so one bad registration
     // does not strand the rest.
+    let registered = 0;
     for (const t of tools) {
       try {
         void mc.registerTool(t, opts);
+        registered += 1;
       } catch {
         /* browser rejected this tool; leave the others registered */
       }
     }
+    console.info(
+      `[webmcp] registered ${registered}/${tools.length} Scope tools on document.modelContext`,
+    );
 
     return () => ctl.abort();
   }, [enabled]);

@@ -14,6 +14,11 @@
 // human-approval park). Flipping this off removes the browser tools; it
 // does not touch anyone's ability to use the app by hand.
 //
+// LATENCY HONESTY: the switch is a server render decision. Flipping it
+// stops every NEW page load immediately; a tab that was already open
+// keeps its registered tools until the next full page load. The server
+// routes those tools call remain fully gated either way.
+//
 // Voice canon: ASCII hyphens only.
 
 export function isWebMcpAdapterEnabled(): boolean {
