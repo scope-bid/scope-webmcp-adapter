@@ -139,7 +139,7 @@ function startRegistration(): number {
       {
         name: "scope_briefing",
         description:
-          "Give a status briefing on this firm's Scope matters: what is awaiting a decision, awaiting a professional, scheduled, or recently completed.",
+          "Give a status briefing on this firm's Scope matters. Returns every active (non-archived) matter with its current status, newest first - the same list scope_list_matters returns. Build the briefing from the status field: pending_approval is awaiting a decision by a person at the firm, open or quoted is awaiting an award, awarded means a professional is engaged, no_coverage means no professional was available. Completion is recorded on the work order, not on this status: an awarded matter stays awarded after the work is done, so read scope_get_matter and use dashboard.data.metadata.work_completed (the professional has performed the work), work_accepted (the firm accepted it) and work_order_status before calling anything finished or still in flight. When the user asks for a subset, filter by status yourself.",
         inputSchema: {
           type: "object",
           properties: {},
@@ -168,7 +168,7 @@ function startRegistration(): number {
       {
         name: "scope_get_matter",
         description:
-          "Read one matter by its id or display id (like SC-1234), including its current status and activity.",
+          "Read one matter by its id or display id (like SC-1234): its status, the quote grid, the work order's status (dashboard.data.metadata.work_order_status, work_completed, work_accepted), unread professional messages, and the dispatch timeline events.",
         inputSchema: {
           type: "object",
           properties: {
