@@ -39,6 +39,12 @@
 // belongs to the session org), POST /api/scope/award. Adding a route to
 // any execute() extends this list and needs its own adversarial pass.
 //
+// HELD IS DATA (2026-10-02). A dispatch or award that parks on a person,
+// or finds nobody at the firm to park it with, comes back in the same
+// reply the MCP tools of the same name give (lib/mcp/held-replies.ts),
+// never with the route's error code on it. A refusal still comes back as
+// the route's body. No route was added by this.
+//
 // 2026-08-28 falsifier round: the original 4-field dispatch schema could
 // not complete intake for process serving / records / court reporting
 // (no form_field_values, no matter_id to answer field_prompts), so every
@@ -54,6 +60,11 @@ import {
   acquireScopeTools,
   recordAsyncToolRejection,
 } from "@/lib/webmcp/lifecycle";
+import {
+  dispatchHoldFrom,
+  heldAwardReply,
+  heldDispatchReply,
+} from "@/lib/mcp/held-replies";
 
 // Minimal shape of the WebMCP API we depend on (document.modelContext).
 // Declared locally so the adapter is self-contained; the browser provides
@@ -84,6 +95,10 @@ function getModelContext(): ModelContext | null {
 // Same-origin fetch to a session-authed Scope route. Cookies attach
 // automatically for same-origin; org/tenancy is resolved server-side from
 // the session, never from these arguments.
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === "object" && !Array.isArray(v);
+}
+
 async function scopeFetch(
   path: string,
   init?: RequestInit,
@@ -120,8 +135,9 @@ export function WebMcpRegister({ enabled }: { enabled: boolean }) {
 // One registration attempt against the live document.modelContext.
 // Returns how many tools the host accepted synchronously; 0 when the
 // surface does not expose the API (the lifecycle retries on the next
-// mount in that case).
-function startRegistration(): number {
+// mount in that case). Exported so a test can drive each execute()
+// through the real routes; the component is the only production caller.
+export function startRegistration(): number {
   const mc = getModelContext();
   if (!mc) {
     // Browser does not expose document.modelContext; nothing to do.
@@ -139,7 +155,7 @@ function startRegistration(): number {
       {
         name: "scope_briefing",
         description:
-          "Give a status briefing on this firm's Scope matters. Returns every active (non-archived) matter with its current status, newest first - the same list scope_list_matters returns. Build the briefing from the status field: pending_approval is awaiting a decision by a person at the firm, open or quoted is awaiting an award, awarded means a professional is engaged, no_coverage means no professional was available. Completion is recorded on the work order, not on this status: an awarded matter stays awarded after the work is done, so read scope_get_matter and use dashboard.data.metadata.work_completed (the professional has performed the work), work_accepted (the firm accepted it) and work_order_status before calling anything finished or still in flight. When the user asks for a subset, filter by status yourself.",
+          "Give a status briefing on this firm's Scope matters. Returns every active (non-archived) matter with its current status, newest first - the same list scope_list_matters returns. Build the briefing from the status field: pending_approval is awaiting a decision by a person at the firm, open or quoted is awaiting an award, awarded means a professional holds the work order and the matter is not closed: either it has not been invoiced yet (the work may be in flight or already done), or it was reopened after a refund or a payment dispute, closed means the work was accepted and invoiced, cancelled means the matter was stopped, no_coverage means no professional was available. An older matter can still read quoted after its award. Where the work itself stands is recorded on the work order: before calling anything finished or still in flight, read scope_get_matter and use dashboard.data.metadata.work_order_status, work_completed (the professional has performed the work) and work_accepted (the firm accepted it). When the user asks for a subset, filter by status yourself.",
         inputSchema: {
           type: "object",
           properties: {},
@@ -274,6 +290,20 @@ function startRegistration(): number {
                 body: JSON.stringify({ form_field_values: ffv ?? {} }),
               },
             );
+            // A park answers 409 on this route. It is the ordinary
+            // outcome, so it goes back as the same reply the first call
+            // and the MCP tool give, without the route's error code
+            // (lib/mcp/held-replies.ts). Any other 409 is a refusal and
+            // goes back as the route sent it.
+            const body = isRecord(r.body) ? r.body : null;
+            const hold =
+              r.status === 409 && body ? dispatchHoldFrom(body, "checked") : null;
+            if (body && hold) {
+              return heldDispatchReply(matterId, hold, {
+                dispatch: body.dispatch,
+                dashboard: body.dashboard ?? null,
+              });
+            }
             return r.body;
           }
           const body: Record<string, unknown> = {
@@ -394,6 +424,18 @@ function startRegistration(): number {
               note: "No adverse parties were provided, so there was nothing to check. Provide adverse_parties to run the conflict gate. Do not report this as a completed conflict check.",
             };
           }
+          // Created and parked (or nobody to park it with): the same
+          // reply as a parked re-dispatch, with the created matter beside
+          // it. Anything else goes back as sent.
+          const created = r.ok && isRecord(r.body) ? r.body : null;
+          const hold = created ? dispatchHoldFrom(created, "none") : null;
+          if (created && hold) {
+            const scope = isRecord(created.scope) ? created.scope : null;
+            const createdId = String(
+              scope?.display_id ?? scope?.id ?? hold.outcome.scope_id ?? "",
+            ).trim();
+            return heldDispatchReply(createdId, hold, created);
+          }
           return r.body;
         },
       },
@@ -424,11 +466,21 @@ function startRegistration(): number {
               vendor_name: input.vendor_name,
             }),
           });
-          // A 409 with approval_pending is the EXPECTED, healthy result -
+          // A 409 with approval_required is the EXPECTED, healthy result -
           // the award parked for a human to release. Return it as a normal
-          // result so the agent can report the park, not as an error. The
-          // payload carries the approval id and an opaque approver user
-          // id, never a person's name.
+          // result so the agent can report the park, not as an error: the
+          // same reply the MCP tool gives (lib/mcp/held-replies.ts), with
+          // no route error code on it. The payload carries the approval id
+          // and an opaque approver user id, never a person's name. Any
+          // other 409 is a refusal and goes back as the route sent it.
+          if (r.status === 409 && isRecord(r.body)) {
+            const held = heldAwardReply(
+              r.body,
+              String(input.matter_id ?? ""),
+              String(input.vendor_name ?? ""),
+            );
+            if (held) return held;
+          }
           return r.body;
         },
       },
