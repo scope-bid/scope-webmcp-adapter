@@ -45,8 +45,35 @@
 // ----------------------------------------------------------------------------
 
 export type DispatchHold =
-  | { kind: "parked"; outcome: Record<string, unknown> }
+  | {
+      kind: "parked";
+      outcome: Record<string, unknown>;
+      /** What the firm is billed, from the route body (see BILLING_KEYS). */
+      billing: Record<string, unknown>;
+    }
   | { kind: "no_approver"; outcome: Record<string, unknown> };
+
+// WHAT THE FIRM IS BILLED, BESIDE THE PROFESSIONAL'S PRICE (2026-10-02).
+// total_cents is the professional's price; the firm is billed that plus
+// Scope's fee as its own invoice line. Both dispatch routes put these keys
+// on a park body (lib/billing/approval-billing-read.ts computes them with
+// the invoice's own fee functions), and both calls copy them onto the
+// reply under the same names, so the two replies keep one shape. Added,
+// never replacing total_cents. A body without them (an older server)
+// reads as null: no number is invented here.
+const BILLING_KEYS = [
+  "firm_total_cents",
+  "scope_fee_cents",
+  "scope_fee_label",
+  "firm_total_is_estimate",
+  "billing_note",
+] as const;
+
+function billingFrom(body: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const k of BILLING_KEYS) out[k] = k in body ? body[k] : null;
+  return out;
+}
 
 const HOLD_ROUTE_ERROR = {
   pending_approval: "approval_required",
@@ -82,7 +109,7 @@ export function dispatchHoldFrom(
     return { kind: "no_approver", outcome };
   }
   return typeof outcome.approval_id === "string" && outcome.approval_id
-    ? { kind: "parked", outcome }
+    ? { kind: "parked", outcome, billing: billingFrom(body) }
     : null;
 }
 
@@ -108,6 +135,7 @@ export function heldDispatchReply(
       approver_role: o.approver_role ?? null,
       vendor_name: o.vendor_name ?? null,
       total_cents: o.total_cents ?? null,
+      ...hold.billing,
       message:
         "Nothing was dispatched and nothing is committed. A person at this firm has to approve this professional at this price before it goes out.",
       next_steps: [
