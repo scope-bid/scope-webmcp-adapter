@@ -26,7 +26,7 @@ MCP server. Nothing can drift, because there is only one implementation.
  ------------------                    -------------------------
  document.modelContext
    .registerTool({                     POST /api/scopes        (dispatch)
-     name, description,   ── fetch ──▶  POST /api/scope/award   (award -> PARK)
+     name, description,   ── fetch ──▶  POST /api/scope/award   (award -> approval)
      inputSchema,                       GET  /api/scopes        (list / brief)
      execute                            GET  /api/scopes/:id    (read one)
    })                                   (session cookie carries org + identity)
@@ -39,23 +39,27 @@ firm's money to a professional. You do not want an agent doing that
 autonomously.
 
 It is safe here because of one server-side rule, decided before this adapter
-existed: **every award parks behind a human-approval gate.** When the award
-route is called by a session (which is what an in-page agent holds), it does
-not commit. It records a pending approval addressed to a person at the firm
-and returns the parked state, naming who has to release it. The money commits
-only after that person grants the approval on their own screen.
+existed: **an award waits for a person at the firm to approve it unless a
+pre-authorization the firm has set up covers it, in which case it commits
+within that pre-authorization's limits.** When the award route is called by a
+session (which is what an in-page agent holds) and nothing covers the award,
+it does not commit. It records a pending approval for a person at the firm and
+returns the parked state. The money commits only after that person grants the
+approval on their own screen.
 
-So the agent can do the whole useful arc - brief, dispatch, award - and the
-award lands as *a request a human still has to sign*. The agent is stopped at
-exactly the step that should belong to a person, and it is stopped by the
-server, not by the honor system of a prompt.
+So the agent can do the whole useful arc - brief, dispatch, award - and an
+award nothing covers lands as *a request a human still has to sign*. The
+agent is stopped at exactly the step that should belong to a person, and it
+is stopped by the server, not by the honor system of a prompt. A
+pre-authorization is set up and confirmed by people at the firm, outside
+anything an agent can call.
 
 The rule that follows from this, and the one line worth taking from this repo:
 
 > **Never register a tool that clears the gate the agent is being stopped by.**
 
 The approval *grant* is deliberately **not** a registered tool. Neither is
-completion, final-cost entry, messaging, deliverables, roster changes, or
+setting up or confirming a pre-authorization, completion, final-cost entry, messaging, deliverables, roster changes, or
 anything else settlement-shaped. The agent can propose; it cannot settle.
 
 ## The tools
@@ -67,8 +71,8 @@ Read-only tools carry `annotations.readOnlyHint: true`.
 | `scope_briefing` | `GET /api/scopes` | Status briefing on the firm's matters. |
 | `scope_list_matters` | `GET /api/scopes` | List the firm's matters. |
 | `scope_get_matter` | `GET /api/scopes/:id` | Read one matter + its activity. |
-| `scope_dispatch_matter` | `POST /api/scopes` | Create + dispatch a matter. Returns named professionals with prices. Parks; contacts no professional until a human releases. |
-| `scope_award_matter` | `POST /api/scope/award` | Award to a named professional. **Parks for human approval**; returns the parked state and the named approver. Cannot commit. |
+| `scope_dispatch_matter` | `POST /api/scopes`, `POST /api/scopes/:id/dispatch` | Create + dispatch a matter, or finish one that came back `incomplete_intake`. Returns named professionals with prices. A dispatch waits for a person at the firm to approve it unless a pre-authorization the firm has set up covers it, in which case it commits within that pre-authorization's limits; no professional is contacted before then. `award: 'quote_only'` prices the matter and chooses and contacts nobody. |
+| `scope_award_matter` | `POST /api/scope/award` | Award to a named professional. **An award waits for a person at the firm to approve it unless a pre-authorization the firm has set up covers it, in which case it commits within that pre-authorization's limits.** A parked award returns the parked state and identifies the approval, not the approver by name. |
 | `scope_award_status` | `GET /api/scopes/:id` | Whether the award is still parked, released, or proceeding. |
 
 ### The do-not-expose list
@@ -105,8 +109,18 @@ If you adapt this to your own product, these are the load-bearing parts:
 ## Files
 
 - [`src/webmcp-register.tsx`](src/webmcp-register.tsx) - the React client
-  component. Registers the tools on mount, unregisters on unmount via an
-  `AbortSignal`. Renders nothing.
+  component. Registers the tools once per document on the first mount that
+  finds `document.modelContext`, and never unregisters: the tools live until
+  a hard navigation resets the document. Renders nothing. Takes two
+  server-read props, `enabled` (the kill switch) and `standingAuth` (which
+  approval sentences the tool descriptions carry).
+- [`src/lifecycle.ts`](src/lifecycle.ts) - the once-per-document
+  registration singleton, and why it has no teardown.
+- [`src/held-replies.ts`](src/held-replies.ts) - the reply an agent gets when
+  a dispatch or award is held for a person rather than refused. Pure
+  functions, no imports.
+- [`src/approval-copy.ts`](src/approval-copy.ts) - the approval sentences, in
+  two states (pre-authorized spending off or on). Pure strings, no imports.
 - [`src/config.ts`](src/config.ts) - the kill switch.
 
 The component is written against Next.js / React, but the pattern is

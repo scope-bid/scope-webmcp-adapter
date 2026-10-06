@@ -49,8 +49,8 @@
 // tests/approvals/approval-copy.test.tsx.
 //
 // Turning the switch on changes the tool descriptions Scope's MCP server
-// lists (what the MCP Directory shows). That is Jack's decision, and it may
-// need a Directory re-review.
+// lists (what the MCP Directory shows), and it may need a Directory
+// re-review.
 //
 // Voice canon: ASCII hyphens only.
 
@@ -260,8 +260,7 @@ export const APPROVAL_COPY = {
   },
   // app/post/post-form.tsx, the Budget max note (the one-service drawer,
   // the multi-service Service step, and Review when a budget max goes out).
-  // Added by PR #251 (Jack's decision, 2026-10-05: state what the code does;
-  // making reroute ask the firm instead is a separate money-path branch).
+  // Added 2026-10-05 to state what the code does.
   // tests/dispatch/budget-max-copy.test.ts pins each clause to its line:
   //   - the reroute clauses, both states: a replacement is never covered
   //     (COVERABLE_COMMIT_KINDS), so the switch does not change them.
