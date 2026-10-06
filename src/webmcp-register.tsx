@@ -19,6 +19,16 @@
 //     until a person at the firm releases the approval (the outbound
 //     fan-out fires only on a released dispatch). The read tools return
 //     only what the signed-in user can already see on their own screen.
+//   - The two bullets above hold while SCOPE_STANDING_AUTH is off. With
+//     it on, a pre-authorization (a standing authorization: set by a firm
+//     admin and confirmed by that admin from an emailed link, in effect from
+//     the confirmation) can
+//     approve a covered award or dispatch within its limits at the same
+//     server gate, so these tools then commit without parking
+//     (lib/dispatch/standing-authorization.ts). The approval GRANT is
+//     still not a tool, and creating or confirming one is not reachable
+//     from any execute(). The two tool descriptions say which state the
+//     server is in (`standingAuth` prop; lib/approvals/approval-copy.ts).
 //   - A server-read kill switch (`enabled` prop) turns all registration
 //     off in one config change if a firm reacts badly.
 //
@@ -56,6 +66,7 @@
 // Voice canon: ASCII hyphens only.
 
 import { useEffect } from "react";
+import { approvalCopy } from "@/lib/approvals/approval-copy";
 import {
   acquireScopeTools,
   recordAsyncToolRejection,
@@ -116,9 +127,22 @@ async function scopeFetch(
   return { ok: res.ok, status: res.status, body };
 }
 
-export function WebMcpRegister({ enabled }: { enabled: boolean }) {
+// Whether the server rendering this document has SCOPE_STANDING_AUTH on,
+// which picks the approval sentences in the two committing tools'
+// descriptions. Set from the server-read prop before the one registration
+// this document gets; both mounts pass the same server value.
+let standingAuthCopy = false;
+
+export function WebMcpRegister({
+  enabled,
+  standingAuth,
+}: {
+  enabled: boolean;
+  standingAuth: boolean;
+}) {
   useEffect(() => {
     if (!enabled) return;
+    standingAuthCopy = standingAuth === true;
     // Once-per-document singleton, no teardown (see lifecycle.ts for
     // the falsifier history). A zero-tool attempt does not latch -
     // whether the host API was absent, refused every tool
@@ -127,7 +151,7 @@ export function WebMcpRegister({ enabled }: { enabled: boolean }) {
     // the next mount retries from zero. Only a registration with at
     // least one live tool stays latched.
     acquireScopeTools(startRegistration);
-  }, [enabled]);
+  }, [enabled, standingAuth]);
 
   return null;
 }
@@ -137,7 +161,10 @@ export function WebMcpRegister({ enabled }: { enabled: boolean }) {
 // surface does not expose the API (the lifecycle retries on the next
 // mount in that case). Exported so a test can drive each execute()
 // through the real routes; the component is the only production caller.
-export function startRegistration(): number {
+// `standingAuth` picks the approval sentences (lib/approvals/approval-copy.ts);
+// the lifecycle calls this with no argument, so it is the value the
+// component set from the server.
+export function startRegistration(standingAuth: boolean = standingAuthCopy): number {
   const mc = getModelContext();
   if (!mc) {
     // Browser does not expose document.modelContext; nothing to do.
@@ -206,7 +233,9 @@ export function startRegistration(): number {
       {
         name: "scope_dispatch_matter",
         description:
-          "Create and dispatch a new matter. Returns named professionals with prices computed from each one's own rate card. Nothing is committed and no professional is contacted until a person at the firm approves an award. Include adverse_parties so the dispatch-time conflict gate has parties to filter professionals against. Quotes compute from category and jurisdiction alone. Complete the work order BEFORE awarding - the professional must never have to call the firm to learn who, where, or what: pass the per-category fields in form_field_values (process serving: party_to_serve, service_address, deadline, deadline_semantics 'on' or 'by', rush 'yes'/'no', affidavit_filing 'yes'/'no'; records retrieval: subject_name, provider_name, provider_location, record_types, date_range; depositions: proceeding_date, location, case_caption). If the response is status='incomplete_intake', ask the user each question in field_prompts, then call this tool again with matter_id set to the returned scope_id and the collected form_field_values - do NOT create a new matter.",
+          "Create and dispatch a new matter. Returns named professionals with prices computed from each one's own rate card. " +
+          approvalCopy("webmcpDispatch", standingAuth) +
+          " Include adverse_parties so the dispatch-time conflict gate has parties to filter professionals against. Quotes compute from category and jurisdiction alone. Complete the work order BEFORE awarding - the professional must never have to call the firm to learn who, where, or what: pass the per-category fields in form_field_values (process serving: party_to_serve, service_address, deadline, deadline_semantics 'on' or 'by', rush 'yes'/'no', affidavit_filing 'yes'/'no'; records retrieval: subject_name, provider_name, provider_location, record_types, date_range; depositions: proceeding_date, location, case_caption). If the response is status='incomplete_intake', ask the user each question in field_prompts, then call this tool again with matter_id set to the returned scope_id and the collected form_field_values - do NOT create a new matter. If the user wants to see the quotes first, or has not chosen a professional, set award to 'quote_only' (nothing is chosen or sent) and award the user's pick with scope_award_matter.",
         inputSchema: {
           type: "object",
           properties: {
@@ -264,6 +293,12 @@ export function startRegistration(): number {
               description:
                 "ONLY when completing an earlier dispatch that returned incomplete_intake: the scope_id it returned. Re-dispatches that matter with the added form_field_values instead of creating a new one.",
             },
+            award: {
+              type: "string",
+              enum: ["auto", "quote_only"],
+              description:
+                "'auto' (default): Scope chooses the professional and sends it for approval. 'quote_only': save the answers and return the quotes and any fields still missing, choosing nobody, asking nobody to approve anything and contacting no professional. Use 'quote_only' when the user wants to see the quotes first or when filling in missing answers before the user has picked a professional, then award the user's pick with scope_award_matter. Leave documents out of a quote_only call.",
+            },
           },
           required: ["title", "service_category", "description"],
           additionalProperties: false,
@@ -279,6 +314,9 @@ export function startRegistration(): number {
             typeof input.matter_id === "string" && input.matter_id.trim()
               ? input.matter_id.trim()
               : null;
+          // Passed through as given; the routes refuse any value other
+          // than 'auto' or 'quote_only' before anything is saved.
+          const awardMode = input.award === undefined ? {} : { award: input.award };
           if (matterId) {
             // Completing an incomplete_intake matter: re-dispatch it with
             // the collected fields. The route 404s unless the matter
@@ -287,7 +325,7 @@ export function startRegistration(): number {
               `/api/scopes/${encodeURIComponent(matterId)}/dispatch`,
               {
                 method: "POST",
-                body: JSON.stringify({ form_field_values: ffv ?? {} }),
+                body: JSON.stringify({ form_field_values: ffv ?? {}, ...awardMode }),
               },
             );
             // A park answers 409 on this route. It is the ordinary
@@ -310,6 +348,7 @@ export function startRegistration(): number {
             title: input.title,
             service_category: input.service_category,
             description: input.description,
+            ...awardMode,
           };
           if (
             typeof input.jurisdiction === "string" &&
@@ -442,7 +481,9 @@ export function startRegistration(): number {
       {
         name: "scope_award_matter",
         description:
-          "Award a dispatched matter to a named professional. This does NOT commit the firm's money: it sends the award for approval by a person at the firm and returns the parked state. The work proceeds only after that person releases it from the /approvals page. The response identifies the approval, not the approver by name - do not invent a person's name when reporting the park.",
+          "Award a dispatched matter to a named professional. " +
+          approvalCopy("webmcpAward", standingAuth) +
+          " The response identifies the approval, not the approver by name - do not invent a person's name when reporting the park.",
         inputSchema: {
           type: "object",
           properties: {
