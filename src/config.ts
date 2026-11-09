@@ -1,13 +1,11 @@
 // WebMCP adapter kill switch.
 //
 // Read on the server at render time. Registration of the browser-side
-// Scope tools (app/components/webmcp/webmcp-register.tsx) is ON by default
-// and turns OFF the moment WEBMCP_ADAPTER_ENABLED is set to "0" / "false"
-// / "off" in the environment. Changing a Vercel environment variable and
-// redeploying the env is a config change, not a code change - no branch,
-// no code review, no source edit - which is the point: if a firm reacts
-// badly to agent-registered tools appearing in their browser, one person
-// can pull the whole surface in a minute.
+// Scope tools (the register component, webmcp-register.tsx) is ON by
+// default and turns OFF when WEBMCP_ADAPTER_ENABLED is set to "0" /
+// "false" / "off" / "no" in the environment. Turning it off is a
+// configuration change, not a code change: no source edit is needed to
+// remove the browser tools.
 //
 // The switch gates REGISTRATION only. The underlying routes each tool
 // calls are unchanged and stay gated on their own (session auth, the
