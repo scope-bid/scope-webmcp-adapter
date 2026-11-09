@@ -1,16 +1,14 @@
-// Document-wide singleton lifecycle for the WebMCP tool registration
-// (2026-08-28, falsifier round 2 of the matter-page mount).
+// Document-wide singleton lifecycle for the WebMCP tool registration.
 //
-// The register component mounts in TWO places - DashboardShell (five
-// firm layouts) and the matter page - and the App Router transition
+// The register component mounts in more than one place - the firm
+// dashboard layouts and the matter page - and the App Router transition
 // between them UNMOUNTS one before the other's effect runs, with the
-// matter page's server render (a loading.tsx boundary plus a dozen
-// sequential reads) in between. The first design refcounted mounts and
-// aborted the registration after a 150ms grace window; the falsifier
-// proved the real gap on the dashboard -> matter hop exceeds the
-// window, so the tools vanished and re-registered on the exact path
-// the judges walk - and a host that rejects duplicate names would have
-// been left with zero tools and no retry.
+// matter page's server render (a loading boundary plus its reads) in
+// between. Refcounting mounts and aborting the registration after a
+// short grace window does not work: the gap on a dashboard -> matter
+// navigation can exceed any such window, so the tools would vanish and
+// re-register mid-path - and a host that rejects duplicate names would
+// be left with zero tools and no retry.
 //
 // So: NO teardown. The first mount that finds the host API registers
 // once, and the registration lives as long as the document. Every
@@ -47,8 +45,8 @@ export function acquireScopeTools(start: () => number): void {
  * back to zero and the next mount retries, while a partial refusal
  * (some tools live) stays latched so the live tools are never
  * re-offered as duplicates. Without this, an all-async-refusing host
- * latched at a full count with zero tools registered and no recovery
- * short of a hard reload (2026-08-28 falsifier).
+ * would latch at a full count with zero tools registered and no recovery
+ * short of a hard reload.
  */
 export function recordAsyncToolRejection(): void {
   if (registeredCount > 0) registeredCount -= 1;

@@ -1,10 +1,10 @@
 // What an agent is told when a dispatch or an award is HELD on a person
 // rather than refused. Shared by both agent surfaces that carry the
 // scope_dispatch_matter and scope_award_matter tools:
-//   - the MCP transports (lib/mcp/legal-tools.ts), where api() throws on
-//     any non-2xx and so sees a 409 as an exception string;
-//   - WebMCP (app/components/webmcp/webmcp-register.tsx), where every
-//     route answer comes back as a body, whatever its status.
+//   - the MCP transports, where the API helper throws on any non-2xx
+//     and so sees a 409 as an exception string;
+//   - WebMCP (webmcp-register.tsx), where every route answer comes back
+//     as a body, whatever its status.
 // Same tool name, same routes, so the same reply on both. Pure functions
 // with no imports: the WebMCP adapter is a client component.
 //
@@ -24,14 +24,14 @@
 //     2xx") with error "approval_required" and the same outcome under
 //     `dispatch`.
 // The re-dispatch is the call the tool tells the model to make after
-// incomplete_intake. On the MCP transports that park reached the agent
-// as "Error: ... -> 409: {...}"; on WebMCP it arrived carrying an
-// `error` key (gap found 2026-10-01). Both calls now give the model the
-// same reply, built by heldDispatchReply.
+// incomplete_intake. Left alone, that park would reach the agent as
+// "Error: ... -> 409: {...}" on the MCP transports and would arrive
+// carrying an `error` key on WebMCP. Both calls instead give the model
+// the same reply, built by heldDispatchReply.
 //
 // Two outcomes are holds, and only when the body says so: the engine's
-// outcome under `dispatch`, plus on the 409 the route's matching error
-// code (the 200 has none to check).
+// outcome under `dispatch`, plus on the 409 the route's corresponding
+// error code (the 200 has none to check).
 //   pending_approval     parked. An approval row exists, its approver is
 //                        sent the release link, and the request waits
 //                        in their queue. Requires that row's id.
@@ -53,13 +53,13 @@ export type DispatchHold =
     }
   | { kind: "no_approver"; outcome: Record<string, unknown> };
 
-// WHAT THE FIRM IS BILLED, BESIDE THE PROFESSIONAL'S PRICE (2026-10-02).
+// WHAT THE FIRM IS BILLED, BESIDE THE PROFESSIONAL'S PRICE.
 // total_cents is the professional's price; the firm is billed that plus
 // Scope's fee as its own invoice line. Both dispatch routes put these keys
-// on a park body (lib/billing/approval-billing-read.ts computes them with
-// the invoice's own fee functions), and both calls copy them onto the
-// reply under the same names, so the two replies keep one shape. Added,
-// never replacing total_cents. A body without them (an older server)
+// on a park body (the server computes them with the same fee functions the
+// invoice uses), and both calls copy them onto the reply under the same
+// names, so the two replies keep one shape. Added, never replacing
+// total_cents. A body without them (an older server)
 // reads as null: no number is invented here.
 const BILLING_KEYS = [
   "firm_total_cents",
@@ -141,14 +141,11 @@ export function heldDispatchReply(
       next_steps: [
         "Nothing was dispatched and nothing is committed.",
         "The approver is emailed a release link; the request waits in the approver's queue at /approvals.",
-        // Nothing about what approving produces: every promise of that
-        // kind was false somewhere. "Approving it sends the dispatch":
-        // a work order needing papers it lacks is awarded and held.
-        // "Approving it makes the award": a pool that changed while the
-        // ask waited is re-asked instead. "Held until the documents are
-        // attached": a matter holding another professional's documents
-        // is released without any the new one can open (2026-10-02
-        // falsifier, rounds 1 to 3). This holds on every park path.
+        // Nothing here says what approving produces, because that
+        // depends on the matter: a work order still missing papers is
+        // awarded and held, and a quote pool that changed while the
+        // request waited is asked again instead. The sentence below
+        // holds on every park path.
         "Nothing goes to a professional before it is approved.",
       ],
     };
@@ -193,11 +190,11 @@ export function heldDispatchReply(
 // and it has to reach the model as a structured envelope it can read out
 // to the user: what is waiting, on whom, and that nothing was committed.
 // POST /api/scope/award answers every park 409, so on the MCP transports
-// the model saw "Error: Scope API POST /api/scope/award -> 409: {...}"
-// and had to guess. A parked award is the ORDINARY outcome of this tool
-// now, so the ordinary outcome cannot be an exception. (Moved here from
-// lib/mcp/legal-tools.ts unchanged, 2026-10-02, so WebMCP answers the
-// same way.)
+// the model would otherwise see "Error: Scope API POST /api/scope/award
+// -> 409: {...}" and have to guess. A parked award is the ORDINARY
+// outcome of this tool, so the ordinary outcome cannot be an exception.
+// The MCP transports and WebMCP both build this reply here, so they
+// answer the same way.
 // ----------------------------------------------------------------------------
 
 /**

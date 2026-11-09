@@ -12,56 +12,53 @@
 //     business logic. Org and tenancy come from the session cookie on the
 //     server, never from a tool argument.
 //   - Nothing settlement-shaped is registered. The award tool PARKS
-//     (server-side human-approval gate, WebMCP Part A) and returns the
-//     parked state; it cannot commit. The approval GRANT stays a human
+//     (at the server-side human-approval gate) and returns the parked
+//     state; it cannot commit. The approval GRANT stays a human
 //     action on /approvals and is deliberately NOT a tool.
 //   - scope_dispatch_matter parks too, so it contacts NO professional
 //     until a person at the firm releases the approval (the outbound
 //     fan-out fires only on a released dispatch). The read tools return
 //     only what the signed-in user can already see on their own screen.
-//   - The two bullets above hold while SCOPE_STANDING_AUTH is off. With
-//     it on, a pre-authorization (a standing authorization: set by a firm
-//     admin and confirmed by that admin from an emailed link, in effect from
-//     the confirmation) can
-//     approve a covered award or dispatch within its limits at the same
-//     server gate, so these tools then commit without parking
-//     (lib/dispatch/standing-authorization.ts). The approval GRANT is
-//     still not a tool, and creating or confirming one is not reachable
-//     from any execute(). The two tool descriptions say which state the
-//     server is in (`standingAuth` prop; lib/approvals/approval-copy.ts).
+//   - The two bullets above hold while pre-authorized spending is
+//     switched off. With it on, a pre-authorization (set by a firm admin
+//     and confirmed by that admin from an emailed link, in effect from the
+//     confirmation) can approve a covered award or dispatch within its
+//     limits at the same server gate, so these tools then commit without
+//     parking. The approval GRANT is still not a tool, and creating or
+//     confirming a pre-authorization is not reachable from any execute().
+//     The two tool descriptions say which state the server is in
+//     (`standingAuth` prop; approval-copy.ts).
 //   - A server-read kill switch (`enabled` prop) turns all registration
-//     off in one config change if a firm reacts badly.
+//     off with one configuration change.
 //
 // Tools are document-scoped and die on hard navigation; app-router soft
 // navigation preserves the document. Registration is a once-per-document
-// singleton (lib/webmcp/lifecycle.ts) with NO teardown on unmount: the
-// component mounts on the five DashboardShell layouts AND the matter
-// page, the App Router transition between them has a real gap (the
-// matter page's loading boundary plus its server render), and any
-// unmount-time abort either drops the tools mid-path or forces a
-// re-register a host may refuse as a duplicate (2026-08-28 falsifier).
+// singleton (lifecycle.ts) with NO teardown on unmount: the component
+// mounts on the firm dashboard layouts AND the matter page, the App
+// Router transition between them has a real gap (the matter page's
+// loading boundary plus its server render), and any unmount-time abort
+// either drops the tools mid-path or forces a re-register a host may
+// refuse as a duplicate.
 // A registered tool on a page without a mount is exactly as safe as on
 // one - every execute() is a session-authed same-origin fetch.
 //
-// EXPOSURE LIST (every route an execute() can reach; falsifier-walked
-// 2026-08-28): GET /api/scopes, GET /api/scopes/[id], POST /api/scopes,
-// POST /api/scopes/[id]/dispatch (ownership-gated: 404 unless the scope
-// belongs to the session org), POST /api/scope/award. Adding a route to
-// any execute() extends this list and needs its own adversarial pass.
+// EXPOSURE LIST (every route an execute() can reach): GET /api/scopes,
+// GET /api/scopes/[id], POST /api/scopes, POST /api/scopes/[id]/dispatch
+// (ownership-gated: 404 unless the scope belongs to the session org),
+// POST /api/scope/award. Adding a route to any execute() extends this
+// list.
 //
-// HELD IS DATA (2026-10-02). A dispatch or award that parks on a person,
-// or finds nobody at the firm to park it with, comes back in the same
-// reply the MCP tools of the same name give (lib/mcp/held-replies.ts),
-// never with the route's error code on it. A refusal still comes back as
-// the route's body. No route was added by this.
+// HELD IS DATA. A dispatch or award that parks on a person, or finds
+// nobody at the firm to park it with, comes back in the same reply the
+// MCP tools of the same name give (held-replies.ts), never with the
+// route's error code on it. A refusal still comes back as the route's
+// body.
 //
-// 2026-08-28 falsifier round: the original 4-field dispatch schema could
-// not complete intake for process serving / records / court reporting
-// (no form_field_values, no matter_id to answer field_prompts), so every
-// such dispatch stranded at incomplete_intake, and with no
-// adverse_parties input the conflict gate had no parties to filter on.
-// The schema below carries the same intake contract as the MCP tool for
-// exactly that reason.
+// The dispatch schema below carries the same intake contract as the MCP
+// tool: form_field_values for the per-category work-order fields,
+// matter_id to answer the field_prompts of an incomplete_intake reply,
+// and adverse_parties so the conflict gate has parties to filter on.
+// Without them a dispatch could not complete intake.
 //
 // Voice canon: ASCII hyphens only.
 
@@ -127,8 +124,8 @@ async function scopeFetch(
   return { ok: res.ok, status: res.status, body };
 }
 
-// Whether the server rendering this document has SCOPE_STANDING_AUTH on,
-// which picks the approval sentences in the two committing tools'
+// Whether the server rendering this document has pre-authorized spending
+// switched on, which picks the approval sentences in the two committing tools'
 // descriptions. Set from the server-read prop before the one registration
 // this document gets; both mounts pass the same server value.
 let standingAuthCopy = false;
@@ -144,7 +141,7 @@ export function WebMcpRegister({
     if (!enabled) return;
     standingAuthCopy = standingAuth === true;
     // Once-per-document singleton, no teardown (see lifecycle.ts for
-    // the falsifier history). A zero-tool attempt does not latch -
+    // why). A zero-tool attempt does not latch -
     // whether the host API was absent, refused every tool
     // synchronously, or accepted and then rejected every returned
     // promise (each async rejection counts the latch back down) - so
@@ -161,7 +158,7 @@ export function WebMcpRegister({
 // surface does not expose the API (the lifecycle retries on the next
 // mount in that case). Exported so a test can drive each execute()
 // through the real routes; the component is the only production caller.
-// `standingAuth` picks the approval sentences (lib/approvals/approval-copy.ts);
+// `standingAuth` picks the approval sentences (approval-copy.ts);
 // the lifecycle calls this with no argument, so it is the value the
 // component set from the server.
 export function startRegistration(standingAuth: boolean = standingAuthCopy): number {
@@ -331,7 +328,7 @@ export function startRegistration(standingAuth: boolean = standingAuthCopy): num
             // A park answers 409 on this route. It is the ordinary
             // outcome, so it goes back as the same reply the first call
             // and the MCP tool give, without the route's error code
-            // (lib/mcp/held-replies.ts). Any other 409 is a refusal and
+            // (held-replies.ts). Any other 409 is a refusal and
             // goes back as the route sent it.
             const body = isRecord(r.body) ? r.body : null;
             const hold =
@@ -381,7 +378,7 @@ export function startRegistration(standingAuth: boolean = standingAuthCopy): num
             input.adverse_parties.length > 0
           ) {
             // The route and the DB check constraint accept exactly these
-            // four roles (migration 0071); anything else is silently
+            // four roles; anything else is silently
             // DROPPED server-side, which would no-op the conflict gate
             // while the response still reports it ran. Normalize common
             // variants (bare strings, name-key objects, hyphen/case role
@@ -448,10 +445,10 @@ export function startRegistration(standingAuth: boolean = standingAuthCopy): num
             method: "POST",
             body: JSON.stringify(body),
           });
-          // The server no longer stamps conflict_check.ran on a
-          // zero-party no-op (fixed 2026-08-28), so this override is
-          // belt-and-braces for any deploy skew: when this surface sent
-          // no parties, never relay a "ran" block as a completed check.
+          // The server does not stamp conflict_check.ran on a zero-party
+          // no-op; this override is belt-and-braces in case an older
+          // server answers: when this surface sent no parties, never
+          // relay a "ran" block as a completed check.
           if (
             !sentAdverseParties &&
             r.body &&
@@ -510,7 +507,7 @@ export function startRegistration(standingAuth: boolean = standingAuthCopy): num
           // A 409 with approval_required is the EXPECTED, healthy result -
           // the award parked for a human to release. Return it as a normal
           // result so the agent can report the park, not as an error: the
-          // same reply the MCP tool gives (lib/mcp/held-replies.ts), with
+          // same reply the MCP tool gives (held-replies.ts), with
           // no route error code on it. The payload carries the approval id
           // and an opaque approver user id, never a person's name. Any
           // other 409 is a refusal and goes back as the route sent it.
